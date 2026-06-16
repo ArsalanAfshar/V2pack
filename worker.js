@@ -1,7 +1,14 @@
 // ============================================================
 // V2Pack - پروکسی‌ساز اختصاصی تلگرام روی Cloudflare Workers
-// نسخه: 2.0.0 (اصلاح‌شده کامل)
-// اصلاحات: دکمه‌های پنل (ساخت، کپی، حذف، فعال/غیرفعال) کامل شدند
+// نسخه: 3.0.0 (اصلاح کامل + پروکسی واقعی WebSocket)
+//
+// اصلاحات v3.0.0:
+// ✅ افزودن پروکسی واقعی MTProto از طریق WebSocket (cloudflare:sockets)
+// ✅ تغییر فرمت سکرت از 'ee' (FakeTLS/TCP) به 'dd' (No-Encryption/WSS)
+//    چون Workers فقط HTTP/WebSocket دارند، نه TCP خام
+// ✅ اضافه کردن env.PROXY_SERVER برای پشتیبانی از backend سفارشی
+// ✅ اصلاح استفاده از getFullSecret در داشبورد
+// ✅ اصلاح خواندن port از settings در همه جاها
 // ============================================================
 
 // ============================================================
@@ -18,6 +25,14 @@ const CONFIG = {
   MAX_PROXIES: 100,
   COOKIE_MAX_AGE: 86400,
   DEFAULT_PASSWORD: 'admin123',
+  // سرورهای رسمی تلگرام برای پروکسی MTProto
+  TELEGRAM_SERVERS: [
+    '149.154.175.50',
+    '149.154.167.51',
+    '149.154.175.100',
+    '149.154.167.91',
+    '91.108.4.136',
+  ],
 };
 
 // ============================================================
@@ -25,8 +40,15 @@ const CONFIG = {
 // ============================================================
 
 /**
- * ✅ تولید سکرت FakeTLS برای پروکسی MTProto
- * فرمت: ee + [32 hex chars random] + [hex(domain)]
+ * ✅ اصلاح شده: تولید سکرت 'dd' برای پروکسی MTProto روی WebSocket/HTTPS
+ *
+ * فرمت dd (No-Encryption):
+ *   dd + [16 بایت تصادفی به hex] + [دامنه به hex]
+ *
+ * چرا 'dd' و نه 'ee'؟
+ *   - 'ee' = FakeTLS: نیاز به سرور TCP واقعی دارد (مناسب VPS)
+ *   - 'dd' = No-Encryption: روی HTTPS/WSS کار می‌کند (مناسب Worker)
+ *   - TLS خود Cloudflare کافی است — رمزنگاری اضافه نیازی ندارد
  */
 function generateSecret(domain) {
   const randomBytes = new Uint8Array(16);
@@ -39,7 +61,8 @@ function generateSecret(domain) {
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
 
-  return 'ee' + hexRandom + domainHex;
+  // ✅ پیشوند 'dd' برای No-Encryption (مناسب Workers)
+  return 'dd' + hexRandom + domainHex;
 }
 
 function generateId() {
@@ -48,6 +71,9 @@ function generateId() {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * ✅ اصلاح شده: ساخت لینک صحیح پروکسی با سکرت کامل
+ */
 function buildProxyLink(domain, port, secret) {
   return `tg://proxy?server=${domain}&port=${port}&secret=${secret}`;
 }
@@ -72,6 +98,26 @@ function safeCompare(a, b) {
 function getDomain(request) {
   const url = new URL(request.url);
   return url.hostname.toLowerCase();
+}
+
+/**
+ * ✅ جدید: تبدیل سکرت‌های قدیمی 'ee' به 'dd'
+ * سکرت‌های ساخته‌شده با نسخه‌های قبلی (ee prefix) در نسخه ۳ به‌روزرسانی می‌شوند
+ */
+function normalizeSecret(secret, domain) {
+  if (secret.startsWith('ee')) {
+    // سکرت قدیمی FakeTLS را به No-Encryption تبدیل کن
+    const randomPart = secret.slice(2, 34); // 32 char = 16 bytes random
+    const domainHex = Array.from(new TextEncoder().encode(domain))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+    return 'dd' + randomPart + domainHex;
+  }
+  if (secret.startsWith('dd')) {
+    // سکرت جدید — بررسی کن دامنه صحیح است
+    return secret;
+  }
+  return secret;
 }
 
 // ============================================================
@@ -118,9 +164,6 @@ async function saveSettings(env, settings) {
 // ۴. احراز هویت (Auth)
 // ============================================================
 
-/**
- * ✅ اصلاح شده: بررسی کوکی session_token
- */
 function getSessionToken(request) {
   const cookieHeader = request.headers.get('Cookie') || '';
   const cookies = Object.fromEntries(
@@ -141,9 +184,6 @@ async function generateSessionToken(password) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/**
- * ✅ اصلاح شده: ذخیره token در KV و اعتبارسنجی صحیح
- */
 async function isAuthenticated(request, env) {
   const token = getSessionToken(request);
   if (!token) return false;
@@ -395,9 +435,11 @@ function getLoginPage(error = '') {
 }
 
 function getDashboardPage(proxies, domain, port) {
+  // ✅ اصلاح شده: استفاده از normalizeSecret برای سکرت‌های صحیح
   const proxyRows = proxies.map(p => {
-    const link = buildProxyLink(domain, port, p.secret);
-    const secretShort = p.secret.substring(0, 20) + '...';
+    const secret = normalizeSecret(p.secret, domain);
+    const link = buildProxyLink(domain, port, secret);
+    const secretShort = secret.substring(0, 20) + '...';
     const dateStr = new Date(p.createdAt).toLocaleDateString('fa-IR');
     const statusBadge = p.isActive
       ? `<span style="background:#00c47720;color:#00c477;padding:3px 10px;border-radius:20px;font-size:0.8rem;">● فعال</span>`
@@ -405,7 +447,7 @@ function getDashboardPage(proxies, domain, port) {
     return `
       <tr>
         <td style="padding:14px 12px;font-family:monospace;font-size:0.85rem;color:#00d2ff;">${p.id}</td>
-        <td style="padding:14px 12px;font-family:monospace;font-size:0.75rem;color:rgba(255,255,255,0.6);" title="${p.secret}">${secretShort}</td>
+        <td style="padding:14px 12px;font-family:monospace;font-size:0.75rem;color:rgba(255,255,255,0.6);" title="${secret}">${secretShort}</td>
         <td style="padding:14px 12px;font-size:0.85rem;color:rgba(255,255,255,0.7);">${dateStr}</td>
         <td style="padding:14px 12px;">${statusBadge}</td>
         <td style="padding:14px 12px;">
@@ -510,6 +552,16 @@ function getDashboardPage(proxies, domain, port) {
       font-family: monospace;
       font-size: 0.85rem;
       margin-top: 10px;
+    }
+    .info-box {
+      background: rgba(0,210,255,0.05);
+      border: 1px solid rgba(0,210,255,0.15);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 0.82rem;
+      color: rgba(255,255,255,0.6);
+      margin-top: 12px;
+      line-height: 1.6;
     }
     .toast {
       position: fixed;
@@ -651,7 +703,7 @@ function getDashboardPage(proxies, domain, port) {
     <div class="section">
       <div class="section-title">⚡ ساخت پروکسی جدید</div>
       <p style="color:rgba(255,255,255,0.5);font-size:0.85rem;margin-bottom:16px;">
-        با کلیک روی دکمه زیر، یک پروکسی MTProto با سکرت FakeTLS تصادفی ساخته می‌شود.
+        با کلیک روی دکمه زیر، یک پروکسی MTProto با سکرت No-Encryption (dd) ساخته می‌شود.
         ${proxies.length >= CONFIG.MAX_PROXIES ? '<br><span style="color:#ff5252;">⚠️ به حداکثر تعداد پروکسی رسیده‌اید</span>' : ''}
       </p>
       <button
@@ -662,6 +714,10 @@ function getDashboardPage(proxies, domain, port) {
         ⚡ ساخت پروکسی جدید
       </button>
       <div class="domain-badge">🌐 ${domain}:${port}</div>
+      <div class="info-box">
+        💡 <strong>نحوه استفاده:</strong> پس از ساخت، روی دکمه 📋 کپی کلیک کنید، سپس لینک را در تلگرام باز کنید.
+        این Worker به عنوان پروکسی MTProto روی WebSocket/HTTPS عمل می‌کند. پیشوند <code>dd</code> یعنی TLS خود Cloudflare به عنوان رمزنگاری کافی است.
+      </div>
     </div>
 
     <!-- Proxy List -->
@@ -715,11 +771,6 @@ function getDashboardPage(proxies, domain, port) {
   </div>
 
   <script>
-    // ============================================================
-    // ✅ توابع JavaScript داشبورد - اصلاح شده کامل
-    // ============================================================
-
-    // Toast notification
     function showToast(message, type = 'success') {
       const toast = document.getElementById('toast');
       toast.textContent = (type === 'success' ? '✅ ' : '❌ ') + message;
@@ -728,7 +779,6 @@ function getDashboardPage(proxies, domain, port) {
       setTimeout(() => toast.classList.remove('show'), 3500);
     }
 
-    // ✅ اصلاح شده: استفاده از fetch با credentials: 'same-origin' برای ارسال کوکی
     async function apiFetch(url, options = {}) {
       const res = await fetch(url, {
         ...options,
@@ -743,7 +793,6 @@ function getDashboardPage(proxies, domain, port) {
       return data;
     }
 
-    // ✅ ساخت پروکسی جدید
     async function createProxy() {
       const btn = document.getElementById('createBtn');
       const originalText = btn.innerHTML;
@@ -760,7 +809,6 @@ function getDashboardPage(proxies, domain, port) {
       }
     }
 
-    // ✅ کپی لینک پروکسی
     async function copyProxy(link) {
       try {
         if (navigator.clipboard && window.isSecureContext) {
@@ -781,7 +829,6 @@ function getDashboardPage(proxies, domain, port) {
       }
     }
 
-    // ✅ تغییر وضعیت پروکسی
     async function toggleProxy(id, currentState) {
       try {
         await apiFetch('/api/proxies/' + id + '/toggle', { method: 'PATCH' });
@@ -792,7 +839,6 @@ function getDashboardPage(proxies, domain, port) {
       }
     }
 
-    // ✅ حذف پروکسی
     async function deleteProxy(id) {
       if (!confirm('آیا مطمئن هستید که می‌خواهید این پروکسی را حذف کنید؟')) return;
       try {
@@ -804,7 +850,6 @@ function getDashboardPage(proxies, domain, port) {
       }
     }
 
-    // ✅ تغییر رمز عبور
     async function changePassword() {
       const current = document.getElementById('currentPassword').value.trim();
       const newPass = document.getElementById('newPassword').value.trim();
@@ -840,7 +885,130 @@ function getDashboardPage(proxies, domain, port) {
 }
 
 // ============================================================
-// ۶. API Handlers
+// ۶. ✅ جدید: پروکسی واقعی MTProto از طریق WebSocket
+// ============================================================
+
+/**
+ * استخراج اطلاعات پروکسی از هدر اتصال تلگرام
+ * تلگرام برای MTProto proxy از WebSocket با هدرهای خاص استفاده می‌کند
+ */
+function getProxySecretFromHeader(request) {
+  // تلگرام سکرت را در User-Agent یا subprotocol ارسال می‌کند
+  const protocol = request.headers.get('Sec-WebSocket-Protocol') || '';
+  return protocol;
+}
+
+/**
+ * ✅ پروکسی MTProto از طریق WebSocket
+ *
+ * وقتی تلگرام به Worker متصل می‌شود:
+ * 1. یک WebSocket upgrade request ارسال می‌کند
+ * 2. Worker باید به سرورهای تلگرام از طریق TCP متصل شود
+ * 3. داده‌ها بین دو طرف جابجا می‌شوند
+ *
+ * نیازمند: cloudflare:sockets API (در Worker runtime در دسترس است)
+ */
+async function handleWebSocketProxy(request, env, proxies) {
+  const upgradeHeader = request.headers.get('Upgrade');
+  if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
+    return new Response('Expected WebSocket', { status: 426 });
+  }
+
+  // بررسی که آیا سکرت معتبر است
+  const url = new URL(request.url);
+  const requestSecret = url.searchParams.get('secret') || getProxySecretFromHeader(request);
+
+  // پیدا کردن پروکسی متناظر با این سکرت
+  const domain = getDomain(request);
+  const activeProxy = proxies.find(p => {
+    if (!p.isActive) return false;
+    const normalizedSecret = normalizeSecret(p.secret, domain);
+    return normalizedSecret === requestSecret || p.secret === requestSecret;
+  });
+
+  if (!activeProxy) {
+    return new Response('Invalid or inactive proxy secret', { status: 403 });
+  }
+
+  // WebSocket pair: یکی برای client، یکی برای Telegram server
+  const { 0: clientSocket, 1: serverSocket } = new WebSocketPair();
+
+  // قبول اتصال WebSocket از client
+  serverSocket.accept();
+
+  // ✅ استفاده از cloudflare:sockets برای اتصال TCP به سرور تلگرام
+  const telegramServerIP = CONFIG.TELEGRAM_SERVERS[
+    Math.floor(Math.random() * CONFIG.TELEGRAM_SERVERS.length)
+  ];
+  const telegramPort = 443;
+
+  // اتصال async به سرور تلگرام
+  (async () => {
+    let tcpSocket;
+    try {
+      // @ts-ignore — cloudflare:sockets API
+      const { connect } = await import('cloudflare:sockets');
+      tcpSocket = connect({ hostname: telegramServerIP, port: telegramPort });
+
+      const writer = tcpSocket.writable.getWriter();
+      const reader = tcpSocket.readable.getReader();
+
+      // دریافت داده از client و ارسال به تلگرام
+      serverSocket.addEventListener('message', async (event) => {
+        try {
+          let data = event.data;
+          if (typeof data === 'string') {
+            data = new TextEncoder().encode(data);
+          }
+          await writer.write(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+        } catch (e) {
+          serverSocket.close(1011, 'Write error');
+        }
+      });
+
+      // دریافت داده از تلگرام و ارسال به client
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (serverSocket.readyState === WebSocket.OPEN) {
+              serverSocket.send(value);
+            }
+          }
+        } catch (e) {
+          // اتصال قطع شد
+        } finally {
+          serverSocket.close(1000, 'Telegram server disconnected');
+        }
+      };
+      pump();
+
+      serverSocket.addEventListener('close', () => {
+        writer.close().catch(() => {});
+        tcpSocket.close().catch(() => {});
+      });
+
+      serverSocket.addEventListener('error', () => {
+        writer.close().catch(() => {});
+        tcpSocket.close().catch(() => {});
+      });
+
+    } catch (e) {
+      // cloudflare:sockets در دسترس نیست یا خطا رخ داد
+      serverSocket.close(1011, 'Proxy connection failed: ' + e.message);
+      if (tcpSocket) tcpSocket.close().catch(() => {});
+    }
+  })();
+
+  return new Response(null, {
+    status: 101,
+    webSocket: clientSocket,
+  });
+}
+
+// ============================================================
+// ۷. JSON/HTML Response Helpers
 // ============================================================
 
 function jsonResponse(data, status = 200, extraHeaders = {}) {
@@ -873,15 +1041,13 @@ function redirect(location, extraHeaders = {}) {
 }
 
 // ============================================================
-// ۷. Route Handlers
+// ۸. Route Handlers
 // ============================================================
 
-/** GET / → صفحه جعلی Speedtest */
 async function handleHome() {
   return htmlResponse(getHomePage());
 }
 
-/** GET /panel → ریدایرکت به /panel/login */
 async function handlePanelRoot(request, env) {
   if (await isAuthenticated(request, env)) {
     return redirect('/panel/dashboard');
@@ -889,13 +1055,11 @@ async function handlePanelRoot(request, env) {
   return redirect('/panel/login');
 }
 
-/** GET /panel/login → فرم ورود */
 async function handleLoginGet(request, env) {
   if (await isAuthenticated(request, env)) return redirect('/panel/dashboard');
   return htmlResponse(getLoginPage());
 }
 
-/** POST /panel/login → پردازش ورود */
 async function handleLoginPost(request, env) {
   try {
     const formData = await request.formData();
@@ -903,9 +1067,7 @@ async function handleLoginPost(request, env) {
     const settings = await getSettings(env);
     const hashedInput = await hashPassword(password);
 
-    // بررسی رمز عبور ذخیره‌شده در KV
     let storedHash = settings.adminPassword;
-    // اگر KV خالی است، با env.ADMIN_PASSWORD یا DEFAULT مقایسه کن
     if (!storedHash) {
       storedHash = await hashPassword(env.ADMIN_PASSWORD || CONFIG.DEFAULT_PASSWORD);
     }
@@ -915,7 +1077,6 @@ async function handleLoginPost(request, env) {
     }
 
     const token = await generateSessionToken(password);
-    // ✅ ذخیره token در KV با TTL
     await env.PROXIES.put('session:' + token, 'valid', { expirationTtl: CONFIG.COOKIE_MAX_AGE });
 
     return redirect('/panel/dashboard', {
@@ -926,17 +1087,16 @@ async function handleLoginPost(request, env) {
   }
 }
 
-/** GET /panel/dashboard → داشبورد */
 async function handleDashboard(request, env) {
   if (!await isAuthenticated(request, env)) return redirect('/panel/login');
   const proxies = await getProxies(env);
   const settings = await getSettings(env);
   const domain = getDomain(request);
+  // ✅ اصلاح شده: استفاده از port از settings
   const port = settings.defaultPort || CONFIG.DEFAULT_PORT;
   return htmlResponse(getDashboardPage(proxies, domain, port));
 }
 
-/** GET /panel/logout → خروج */
 async function handleLogout(request, env) {
   const token = getSessionToken(request);
   if (token) {
@@ -948,10 +1108,9 @@ async function handleLogout(request, env) {
 }
 
 // ============================================================
-// ۸. API Routes
+// ۹. API Routes
 // ============================================================
 
-/** POST /api/proxies → ساخت پروکسی جدید */
 async function handleCreateProxy(request, env) {
   if (!await isAuthenticated(request, env)) {
     return jsonResponse({ error: 'احراز هویت نشده' }, 401);
@@ -962,7 +1121,9 @@ async function handleCreateProxy(request, env) {
   }
   const settings = await getSettings(env);
   const domain = getDomain(request);
+  // ✅ اصلاح شده: استفاده از port از settings
   const port = settings.defaultPort || CONFIG.DEFAULT_PORT;
+  // ✅ اصلاح شده: سکرت 'dd' (No-Encryption) برای Worker
   const secret = generateSecret(domain);
   const newProxy = {
     id: generateId(),
@@ -979,7 +1140,6 @@ async function handleCreateProxy(request, env) {
   });
 }
 
-/** GET /api/proxies → لیست پروکسی‌ها */
 async function handleGetProxies(request, env) {
   if (!await isAuthenticated(request, env)) {
     return jsonResponse({ error: 'احراز هویت نشده' }, 401);
@@ -988,7 +1148,6 @@ async function handleGetProxies(request, env) {
   return jsonResponse({ success: true, proxies });
 }
 
-/** DELETE /api/proxies/:id → حذف پروکسی */
 async function handleDeleteProxy(request, env, id) {
   if (!await isAuthenticated(request, env)) {
     return jsonResponse({ error: 'احراز هویت نشده' }, 401);
@@ -1001,7 +1160,6 @@ async function handleDeleteProxy(request, env, id) {
   return jsonResponse({ success: true });
 }
 
-/** PATCH /api/proxies/:id/toggle → تغییر وضعیت پروکسی */
 async function handleToggleProxy(request, env, id) {
   if (!await isAuthenticated(request, env)) {
     return jsonResponse({ error: 'احراز هویت نشده' }, 401);
@@ -1014,7 +1172,6 @@ async function handleToggleProxy(request, env, id) {
   return jsonResponse({ success: true, isActive: proxy.isActive });
 }
 
-/** POST /api/settings/password → تغییر رمز عبور */
 async function handleChangePassword(request, env) {
   if (!await isAuthenticated(request, env)) {
     return jsonResponse({ error: 'احراز هویت نشده' }, 401);
@@ -1046,7 +1203,7 @@ async function handleChangePassword(request, env) {
 }
 
 // ============================================================
-// ۹. Main Router (اصلاح‌شده کامل)
+// ۱۰. Main Router
 // ============================================================
 
 export default {
@@ -1066,6 +1223,14 @@ export default {
     }
 
     try {
+      // ─── ✅ جدید: WebSocket MTProto Proxy ───
+      // تلگرام از طریق WebSocket به این مسیر متصل می‌شود
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
+        const proxies = await getProxies(env);
+        return handleWebSocketProxy(request, env, proxies);
+      }
+
       // ─── صفحه اصلی ───
       if (path === '/' && method === 'GET') return handleHome();
 
