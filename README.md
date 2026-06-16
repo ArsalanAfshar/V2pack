@@ -3,7 +3,7 @@
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-orange?logo=cloudflare)](https://workers.cloudflare.com)
 [![MTProto](https://img.shields.io/badge/Protocol-MTProto-blue?logo=telegram)](https://core.telegram.org/mtproto)
 [![KV Storage](https://img.shields.io/badge/Storage-KV-green)](https://developers.cloudflare.com/kv)
-[![Version](https://img.shields.io/badge/Version-2.0.0-purple)](https://github.com/ArsalanAfshar/V2pack)
+[![Version](https://img.shields.io/badge/Version-3.0.0-purple)](https://github.com/ArsalanAfshar/V2pack)
 
 ---
 
@@ -19,18 +19,57 @@
 - 🎭 **صفحه جعلی** Speedtest برای مخفی‌سازی
 - 💾 **ذخیره‌سازی دائمی** با Cloudflare KV
 - 🔒 **امنیت بالا** (SHA-256، timing-safe compare، HttpOnly cookie، session token در KV)
-- 🧩 **سکرت FakeTLS** با فرمت `ee + random + domain_hex` برای دور زدن فیلترینگ
+- 🌐 **پروکسی واقعی** MTProto از طریق WebSocket با `cloudflare:sockets`
+- 🔑 **سکرت No-Encryption (dd)** مناسب برای Workers بدون نیاز به VPS
 
 ---
 
-## 🔧 اصلاحات نسخه 2.0.0
+## 🔧 اصلاحات نسخه ۳.۰.۰ — باگ‌های اصلی که پروکسی‌ها کار نمی‌کردند
 
-| مشکل | علت | راه‌حل |
-|------|-----|---------|
-| دکمه‌ها (ساخت، کپی، حذف، غیرفعال) کار نمی‌کردند | احراز هویت API با کوکی اشتباه بود | ذخیره session token در KV + `credentials: 'same-origin'` |
-| پروکسی ساخته نمی‌شد | مسیر API روتر ناقص بود | روتر کامل با `regex` برای مسیرهای پویا |
-| کوکی ارسال نمی‌شد | `fetch` در داشبورد بدون `credentials` بود | اضافه کردن `credentials: 'same-origin'` به همه API call‌ها |
-| سکرت پروکسی ناقص بود | فرمت FakeTLS رعایت نشده بود | فرمت صحیح: `ee + 32hex + domain_hex` |
+| # | مشکل | علت | راه‌حل |
+|---|------|-----|---------|
+| 1 | **[بحرانی] پروکسی‌ها اصلاً کار نمی‌کردند** | Worker هیچ پروکسی واقعی انجام نمی‌داد — فقط پنل مدیریت بود | افزودن WebSocket handler با `cloudflare:sockets` برای اتصال TCP به سرورهای تلگرام |
+| 2 | **[بحرانی] فرمت سکرت اشتباه (`ee`)** | پیشوند `ee` (FakeTLS) نیاز به سرور TCP واقعی دارد؛ Workers فقط HTTP/WS دارند | تغییر به پیشوند `dd` (No-Encryption) که روی HTTPS/WSS کار می‌کند |
+| 3 | **[متوسط] سکرت‌ها در داشبورد بدون نرمال‌سازی** | `p.secret` مستقیم استفاده می‌شد بدون بررسی دامنه | افزودن `normalizeSecret()` در داشبورد و لینک‌های کپی |
+| 4 | **[متوسط] Port از settings نادیده گرفته می‌شد** | در بعضی جاها port به جای settings.defaultPort از CONFIG.DEFAULT_PORT گرفته می‌شد | اصلاح `handleCreateProxy` و `handleDashboard` |
+
+---
+
+## 🔑 توضیح فنی: چرا `dd` به جای `ee`؟
+
+```
+پیشوند ee = FakeTLS
+  ✅ برای VPS با IP ثابت و پورت باز
+  ❌ نیاز به سرور TCP خام دارد
+  ❌ Cloudflare Workers فقط HTTP/WebSocket دارند — TCP خام ندارند
+
+پیشوند dd = No-Encryption (MTProto روی TLS بیرونی)
+  ✅ روی HTTPS/WSS کار می‌کند
+  ✅ TLS خود Cloudflare به عنوان لایه رمزنگاری استفاده می‌شود
+  ✅ مناسب Cloudflare Workers
+  ✅ بدون نیاز به VPS
+```
+
+---
+
+## 🏗 معماری جدید
+
+```
+Telegram Client
+      │
+      │  WebSocket (WSS:443)
+      ▼
+Cloudflare Worker  ←── پنل مدیریت (KV)
+      │
+      │  TCP Socket (cloudflare:sockets)
+      ▼
+Telegram Servers
+(149.154.x.x / 91.108.x.x)
+```
+
+Worker دو کار انجام می‌دهد:
+1. **پنل مدیریت**: ساخت/حذف/مدیریت پروکسی‌ها
+2. **پروکسی واقعی**: قبول WebSocket از تلگرام و پل زدن به سرور تلگرام با TCP
 
 ---
 
@@ -98,36 +137,19 @@
 
 1. به تب **Deployments** بروید
 2. روی **Deploy** کلیک کنید
-3. چند ثانیه صبر کنید تا Worker فعال شود
 
 ---
 
-## 🌐 مسیرها و استفاده
-
-| مسیر | توضیح |
-|------|-------|
-| `https://your-worker.workers.dev/` | صفحه اصلی (Speedtest جعلی) |
-| `https://your-worker.workers.dev/panel` | ریدایرکت به لاگین |
-| `https://your-worker.workers.dev/panel/login` | صفحه ورود به پنل |
-| `https://your-worker.workers.dev/panel/dashboard` | داشبورد مدیریت |
-| `https://your-worker.workers.dev/panel/logout` | خروج از پنل |
-| `https://your-worker.workers.dev/api/proxies` | API لیست و ساخت پروکسی |
-| `https://your-worker.workers.dev/api/proxies/:id` | API حذف پروکسی |
-| `https://your-worker.workers.dev/api/proxies/:id/toggle` | API تغییر وضعیت |
-| `https://your-worker.workers.dev/api/settings/password` | API تغییر رمز |
-
----
-
-## 📱 نحوه استفاده از پنل
+## 🎯 استفاده از پنل مدیریت
 
 ### ورود به پنل
-1. به آدرس `/panel` بروید
+1. به آدرس `https://YOUR-WORKER.workers.dev/panel` بروید
 2. رمز عبوری که در متغیر محیطی تنظیم کردید را وارد کنید
 3. روی **ورود به پنل** کلیک کنید
 
 ### ساخت پروکسی جدید
 1. در داشبورد، روی دکمه **⚡ ساخت پروکسی جدید** کلیک کنید
-2. پروکسی به صورت خودکار با یک سکرت FakeTLS تصادفی ساخته می‌شود
+2. پروکسی به صورت خودکار با سکرت No-Encryption (`dd`) ساخته می‌شود
 3. پروکسی جدید در لیست نمایش داده می‌شود
 
 ### استفاده از پروکسی در تلگرام
@@ -135,10 +157,11 @@
 2. لینک `tg://proxy?...` در کلیپ‌بورد کپی می‌شود
 3. این لینک را در تلگرام باز کنید تا پروکسی اضافه شود
 
-### فرمت لینک پروکسی
+### فرمت لینک پروکسی (نسخه ۳)
 ```
-tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[32hex_random][domain_hex]
+tg://proxy?server=YOUR-WORKER.workers.dev&port=443&secret=dd[32hex_random][domain_hex]
 ```
+> **توجه:** پیشوند `dd` (نه `ee`) برای Workers ضروری است.
 
 ### مدیریت پروکسی‌ها
 - **📋 کپی:** کپی کردن لینک MTProto
@@ -159,7 +182,7 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[32hex_random][domain_hex]
 [
   {
     "id": "abc123def456",
-    "secret": "eea1b2c3...domain_hex",
+    "secret": "dd[32hex_random][domain_hex]",
     "createdAt": "2024-01-15T10:30:00.000Z",
     "isActive": true
   }
@@ -191,8 +214,10 @@ valid
 | **Session Token** | ذخیره در KV با TTL 24 ساعت |
 | **مقایسه امن** | Timing-safe string comparison |
 | **محدودیت پروکسی** | حداکثر ۱۰۰ پروکسی |
-| **سکرت FakeTLS** | ee + random(16 bytes) + hex(domain) |
+| **سکرت MTProto** | dd + random(16 bytes) + hex(domain) |
+| **لایه TLS** | Cloudflare Edge (بدون رمزنگاری اضافه) |
 | **مخفی‌سازی** | صفحه اصلی جعلی Speedtest |
+| **تأیید سکرت** | هر WebSocket با سکرت معتبر و پروکسی فعال تأیید می‌شود |
 
 ---
 
@@ -218,14 +243,21 @@ valid
 2. KV Namespace به درستی متصل است
 3. کوکی `session_token` در مرورگر ذخیره شده
 
-### پنل باز نمی‌شود
-**راه‌حل:** آدرس دقیقاً `/panel` باشد (حساس به حروف کوچک/بزرگ).
-
 ### پروکسی در تلگرام کار نمی‌کند
-**راه‌حل:**
-- مطمئن شوید پروکسی در وضعیت **فعال** باشد
-- دامنه Worker باید بدون پورت در لینک تلگرام باشد (مثلاً `my-worker.workers.dev`)
-- از نسخه به‌روز تلگرام استفاده کنید
+**راه‌حل مرحله‌به‌مرحله:**
+1. مطمئن شوید پروکسی در وضعیت **فعال** است
+2. مطمئن شوید سکرت با پیشوند `dd` شروع می‌شود (نه `ee`)
+3. از نسخه به‌روز تلگرام استفاده کنید (v9.0+)
+4. در تنظیمات تلگرام، `Settings > Data and Storage > Use Proxy` را بررسی کنید
+5. اگر لینک قدیمی دارید (پیشوند `ee`)، آن را حذف کنید و پروکسی جدید بسازید
+
+### خطا: `Invalid or inactive proxy secret`
+**راه‌حل:** پروکسی ممکن است غیرفعال شده باشد. از پنل مدیریت آن را فعال کنید.
+
+### خطا: `Proxy connection failed: ...`
+**راه‌حل:** این خطا معمولاً نشان می‌دهد که `cloudflare:sockets` در دسترس نیست.
+- مطمئن شوید که Worker از runtime جدید Cloudflare استفاده می‌کند
+- در **Settings > Runtime** مقدار `nodejs_compat` یا `experimental` فعال کنید
 
 ---
 
@@ -238,13 +270,16 @@ valid
 اگر متغیر `ADMIN_PASSWORD` تنظیم نشده باشد، رمز پیش‌فرض `admin123` است. **حتماً آن را تغییر دهید!**
 
 ### آیا می‌توانم دامنه اختصاصی استفاده کنم؟
-بله! از تب **Triggers** در داشبورد Worker می‌توانید یک Custom Domain اضافه کنید.
+بله! از تب **Triggers** در داشبورد Worker می‌توانید یک Custom Domain اضافه کنید. توجه داشته باشید که اگر دامنه تغییر کند، پروکسی‌های قدیمی باید دوباره ساخته شوند.
 
 ### چند پروکسی می‌توانم بسازم؟
 حداکثر **۱۰۰ پروکسی** در هر Worker مجاز است.
 
 ### چطور session‌های قدیمی را پاک کنم؟
 به صورت خودکار بعد از **۲۴ ساعت** منقضی می‌شوند. همچنین با کلیک روی **خروج**، session فوری پاک می‌شود.
+
+### پروکسی‌های ساخته‌شده با نسخه قبلی (`ee`) هنوز کار می‌کنند؟
+خیر. پروکسی‌های قدیمی با پیشوند `ee` باید حذف و دوباره ساخته شوند. نسخه ۳.۰.۰ به صورت خودکار در داشبورد آن‌ها را به `dd` نرمال می‌کند، اما برای عملکرد صحیح باید پروکسی جدید بسازید.
 
 ---
 
@@ -256,4 +291,4 @@ valid
 
 ساخته شده با ❤️ برای جامعه فارسی‌زبان
 
-**V2Pack v2.0.0**
+**V2Pack v3.0.0**
