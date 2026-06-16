@@ -1,17 +1,15 @@
-# 🛡 V2Pack - پروکسی‌ساز اختصاصی تلگرام روی Cloudflare Workers
+# 🛡 V2Pack — پروکسی‌ساز اختصاصی تلگرام روی Cloudflare Workers
 
-<div align="center">
-  <img src="https://img.shields.io/badge/Cloudflare-Workers-orange?logo=cloudflare" alt="Cloudflare Workers" />
-  <img src="https://img.shields.io/badge/Protocol-MTProto-blue?logo=telegram" alt="MTProto" />
-  <img src="https://img.shields.io/badge/Storage-KV-green" alt="KV Storage" />
-  <img src="https://img.shields.io/badge/Version-1.0.0-purple" alt="Version" />
-</div>
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-orange?logo=cloudflare)](https://workers.cloudflare.com)
+[![MTProto](https://img.shields.io/badge/Protocol-MTProto-blue?logo=telegram)](https://core.telegram.org/mtproto)
+[![KV Storage](https://img.shields.io/badge/Storage-KV-green)](https://developers.cloudflare.com/kv)
+[![Version](https://img.shields.io/badge/Version-2.0.0-purple)](https://github.com/ArsalanAfshar/V2pack)
 
 ---
 
 ## 📌 معرفی پروژه
 
-**V2Pack** یک ابزار حرفه‌ای برای ساخت و مدیریت پروکسی‌های اختصاصی تلگرام (MTProto) روی Cloudflare Workers است. این پروژه دارای یک پنل مدیریت امن و یک صفحه اصلی مخفی‌سازی شده است که از دید بازدیدکنندگان معمولی محافظت می‌کند.
+**V2Pack** یک ابزار حرفه‌ای برای ساخت و مدیریت پروکسی‌های اختصاصی تلگرام (MTProto) روی Cloudflare Workers است.
 
 ### ✨ ویژگی‌های اصلی
 
@@ -20,14 +18,26 @@
 - 🔐 **پنل مدیریت امن** با احراز هویت رمز عبور + کوکی HttpOnly
 - 🎭 **صفحه جعلی** Speedtest برای مخفی‌سازی
 - 💾 **ذخیره‌سازی دائمی** با Cloudflare KV
-- 🔒 **امنیت بالا** (SHA-256، timing-safe compare، HttpOnly cookie)
+- 🔒 **امنیت بالا** (SHA-256، timing-safe compare، HttpOnly cookie، session token در KV)
+- 🧩 **سکرت FakeTLS** با فرمت `ee + random + domain_hex` برای دور زدن فیلترینگ
+
+---
+
+## 🔧 اصلاحات نسخه 2.0.0
+
+| مشکل | علت | راه‌حل |
+|------|-----|---------|
+| دکمه‌ها (ساخت، کپی، حذف، غیرفعال) کار نمی‌کردند | احراز هویت API با کوکی اشتباه بود | ذخیره session token در KV + `credentials: 'same-origin'` |
+| پروکسی ساخته نمی‌شد | مسیر API روتر ناقص بود | روتر کامل با `regex` برای مسیرهای پویا |
+| کوکی ارسال نمی‌شد | `fetch` در داشبورد بدون `credentials` بود | اضافه کردن `credentials: 'same-origin'` به همه API call‌ها |
+| سکرت پروکسی ناقص بود | فرمت FakeTLS رعایت نشده بود | فرمت صحیح: `ee + 32hex + domain_hex` |
 
 ---
 
 ## 🚀 راه‌اندازی گام‌به‌گام
 
 ### پیش‌نیازها
-- اکانت Cloudflare (رایگان کافی است)
+- اکانت Cloudflare (پلن رایگان کافی است)
 - آشنایی پایه با داشبورد Cloudflare
 
 ---
@@ -39,7 +49,6 @@
 3. روی **KV** کلیک کنید
 4. دکمه **Create a namespace** را بزنید
 5. نام `PROXIES` را وارد کنید و **Add** را بزنید
-6. **Namespace ID** را یادداشت کنید (بعداً لازم است)
 
 ---
 
@@ -56,7 +65,7 @@
 
 1. در صفحه Worker، روی **Edit code** کلیک کنید
 2. تمام کد داخل ویرایشگر را پاک کنید
-3. محتوای فایل `worker.js` را کپی و جایگذاری کنید
+3. محتوای فایل `Worker.js` را کپی و جایگذاری کنید
 4. روی **Save and Deploy** کلیک کنید
 
 ---
@@ -67,7 +76,7 @@
 2. بخش **Variables and Secrets** را پیدا کنید
 3. روی **Add variable** کلیک کنید:
    - **Variable name:** `ADMIN_PASSWORD`
-   - **Value:** رمز عبور دلخواه شما (حداقل ۶ کاراکتر)
+   - **Value:** رمز عبور دلخواه (حداقل ۶ کاراکتر)
 4. روی **Save** کلیک کنید
 
 > ⚠️ **مهم:** اگر این متغیر تنظیم نشود، رمز پیش‌فرض `admin123` خواهد بود. حتماً آن را تغییر دهید!
@@ -79,7 +88,7 @@
 1. هنوز در تب **Settings** بمانید
 2. بخش **KV Namespace Bindings** را پیدا کنید
 3. روی **Add binding** کلیک کنید:
-   - **Variable name:** `PROXIES`
+   - **Variable name:** `PROXIES`  ← **دقیقاً همین نام (حروف بزرگ)**
    - **KV namespace:** فضای نامی که در مرحله ۱ ساختید
 4. روی **Save** کلیک کنید
 
@@ -98,10 +107,14 @@
 | مسیر | توضیح |
 |------|-------|
 | `https://your-worker.workers.dev/` | صفحه اصلی (Speedtest جعلی) |
-| `https://your-worker.workers.dev/panel` | صفحه ورود به پنل |
+| `https://your-worker.workers.dev/panel` | ریدایرکت به لاگین |
+| `https://your-worker.workers.dev/panel/login` | صفحه ورود به پنل |
 | `https://your-worker.workers.dev/panel/dashboard` | داشبورد مدیریت |
 | `https://your-worker.workers.dev/panel/logout` | خروج از پنل |
-| `https://your-worker.workers.dev/api/*` | API داخلی (نیاز به احراز هویت) |
+| `https://your-worker.workers.dev/api/proxies` | API لیست و ساخت پروکسی |
+| `https://your-worker.workers.dev/api/proxies/:id` | API حذف پروکسی |
+| `https://your-worker.workers.dev/api/proxies/:id/toggle` | API تغییر وضعیت |
+| `https://your-worker.workers.dev/api/settings/password` | API تغییر رمز |
 
 ---
 
@@ -114,17 +127,17 @@
 
 ### ساخت پروکسی جدید
 1. در داشبورد، روی دکمه **⚡ ساخت پروکسی جدید** کلیک کنید
-2. پروکسی به صورت خودکار با یک سکرت تصادفی ساخته می‌شود
+2. پروکسی به صورت خودکار با یک سکرت FakeTLS تصادفی ساخته می‌شود
 3. پروکسی جدید در لیست نمایش داده می‌شود
 
-### استفاده از پروکسی
+### استفاده از پروکسی در تلگرام
 1. در لیست پروکسی‌ها، روی دکمه **📋 کپی** کلیک کنید
 2. لینک `tg://proxy?...` در کلیپ‌بورد کپی می‌شود
 3. این لینک را در تلگرام باز کنید تا پروکسی اضافه شود
 
 ### فرمت لینک پروکسی
 ```
-tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
+tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[32hex_random][domain_hex]
 ```
 
 ### مدیریت پروکسی‌ها
@@ -133,7 +146,7 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
 - **🗑 حذف:** حذف کامل پروکسی
 
 ### تغییر رمز عبور
-1. به بخش **⚙️ تنظیمات پنل** بروید
+1. در پایین داشبورد، بخش **⚙️ تنظیمات پنل** را پیدا کنید
 2. رمز عبور فعلی و رمز جدید را وارد کنید
 3. روی **🔑 تغییر رمز** کلیک کنید
 
@@ -146,7 +159,7 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
 [
   {
     "id": "abc123def456",
-    "secret": "eea1b2c3d4e5f6a7b8c9d0e1f2a3b4c5",
+    "secret": "eea1b2c3...domain_hex",
     "createdAt": "2024-01-15T10:30:00.000Z",
     "isActive": true
   }
@@ -161,6 +174,12 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
 }
 ```
 
+### کلید `session:{token}`
+```
+valid
+```
+> **توضیح:** این کلیدها برای ذخیره session‌های فعال استفاده می‌شوند و TTL دارند (24 ساعت).
+
 ---
 
 ## 🔒 جزئیات امنیتی
@@ -169,9 +188,10 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
 |-------|---------|
 | **هش رمز عبور** | SHA-256 از طریق Web Crypto API |
 | **کوکی احراز هویت** | HttpOnly + Secure + SameSite=Strict |
+| **Session Token** | ذخیره در KV با TTL 24 ساعت |
 | **مقایسه امن** | Timing-safe string comparison |
 | **محدودیت پروکسی** | حداکثر ۱۰۰ پروکسی |
-| **اعتبارسنجی ورودی** | بررسی تمام ورودی‌های API |
+| **سکرت FakeTLS** | ee + random(16 bytes) + hex(domain) |
 | **مخفی‌سازی** | صفحه اصلی جعلی Speedtest |
 
 ---
@@ -184,15 +204,35 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
 
 ---
 
-## ❓ سوالات متداول (FAQ)
+## 🛠 عیب‌یابی
+
+### خطا: `env.PROXIES is not defined`
+**راه‌حل:** KV Namespace را با نام binding دقیقاً `PROXIES` (حروف بزرگ) به Worker متصل کنید.
+
+### خطا: `500 Internal Server Error`
+**راه‌حل:** در Cloudflare Dashboard، به **Workers > Logs** بروید و خطای دقیق را ببینید.
+
+### دکمه‌های پنل کار نمی‌کنند
+**راه‌حل:** مطمئن شوید:
+1. از آدرس `workers.dev` (HTTPS) استفاده می‌کنید
+2. KV Namespace به درستی متصل است
+3. کوکی `session_token` در مرورگر ذخیره شده
+
+### پنل باز نمی‌شود
+**راه‌حل:** آدرس دقیقاً `/panel` باشد (حساس به حروف کوچک/بزرگ).
+
+### پروکسی در تلگرام کار نمی‌کند
+**راه‌حل:**
+- مطمئن شوید پروکسی در وضعیت **فعال** باشد
+- دامنه Worker باید بدون پورت در لینک تلگرام باشد (مثلاً `my-worker.workers.dev`)
+- از نسخه به‌روز تلگرام استفاده کنید
+
+---
+
+## ❓ سوالات متداول
 
 ### آیا این سرویس رایگان است؟
 بله! Cloudflare Workers در پلن رایگان تا **۱۰۰,۰۰۰ درخواست در روز** رایگان است. KV Storage هم تا **۱۰۰,۰۰۰ عملیات خواندن** در روز رایگان است.
-
-### چرا پروکسی‌هایم کار نمی‌کنند؟
-- مطمئن شوید KV Namespace به درستی به Worker متصل شده
-- بررسی کنید که نام Binding دقیقاً `PROXIES` باشد (حروف بزرگ)
-- پروکسی را فعال کنید (isActive = true)
 
 ### رمز عبور پیش‌فرض چیست؟
 اگر متغیر `ADMIN_PASSWORD` تنظیم نشده باشد، رمز پیش‌فرض `admin123` است. **حتماً آن را تغییر دهید!**
@@ -200,27 +240,11 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
 ### آیا می‌توانم دامنه اختصاصی استفاده کنم؟
 بله! از تب **Triggers** در داشبورد Worker می‌توانید یک Custom Domain اضافه کنید.
 
-### چطور پروکسی‌های قدیمی را حذف کنم؟
-از داشبورد پنل، دکمه 🗑 **حذف** را کنار هر پروکسی بزنید. یا از KV Dashboard در Cloudflare، مستقیماً کلید `proxies` را ویرایش کنید.
-
 ### چند پروکسی می‌توانم بسازم؟
 حداکثر **۱۰۰ پروکسی** در هر Worker مجاز است.
 
----
-
-## 🛠 عیب‌یابی
-
-### خطا: `env.PROXIES is not defined`
-**راه‌حل:** KV Namespace را با نام binding دقیقاً `PROXIES` به Worker متصل کنید.
-
-### خطا: `500 Internal Server Error`
-**راه‌حل:** در Cloudflare Dashboard، به Workers > Logs بروید و خطای دقیق را ببینید.
-
-### پنل باز نمی‌شود
-**راه‌حل:** مطمئن شوید آدرس دقیقاً `/panel` است (نه `/Panel` یا `/PANEL`).
-
-### کوکی ذخیره نمی‌شود
-**راه‌حل:** باید از HTTPS استفاده کنید. Workers.dev به صورت پیش‌فرض HTTPS است.
+### چطور session‌های قدیمی را پاک کنم؟
+به صورت خودکار بعد از **۲۴ ساعت** منقضی می‌شوند. همچنین با کلیک روی **خروج**، session فوری پاک می‌شود.
 
 ---
 
@@ -230,7 +254,6 @@ tg://proxy?server=YOUR_DOMAIN&port=443&secret=ee[30 hex chars]
 
 ---
 
-<div align="center">
-  <p>ساخته شده با ❤️ برای جامعه فارسی‌زبان</p>
-  <p><strong>V2Pack v1.0.0</strong></p>
-</div>
+ساخته شده با ❤️ برای جامعه فارسی‌زبان
+
+**V2Pack v2.0.0**
